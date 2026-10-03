@@ -1,0 +1,19 @@
+[Unit]
+Description=ZSpace T2 power button policy (short press ignored, held press powers off)
+Documentation=file:/etc/t2/powerkey.conf
+After=systemd-udevd.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/t2-powerkey.py
+# The input device can be missing briefly (PMIC probe order); the script
+# rescans, and the unit restarts if it ever exits.
+Restart=always
+RestartSec=2
+# The poweroff path must not be blocked by anything this unit could be
+# ordered behind.
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=Grow the ZSpace T2 root filesystem to fill p6
+Documentation=file:///usr/local/sbin/t2-growroot.sh
+# The script resolves the root partition from findmnt, so it must run after
+# / is mounted and after e2fsprogs (resize2fs) is available.
+After=local-fs.target
+ConditionPathExists=/usr/local/sbin/t2-growroot.sh
+ConditionPathExists=/usr/bin/growpart
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/t2-growroot.sh
+# A failed grow must not wedge the boot: the board still has a working
+# read-write rootfs, just at its built size.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+Package: t2-utils
+Version: @VERSION@
+Architecture: all
+Section: admin
+Priority: optional
+Maintainer: zhongfu <me@zhongfu.li>
+Depends: python3, python3-dbus, python3-gi, bluez, cloud-guest-utils, dnsmasq, e2fsprogs, iproute2, libubootenv-tool, network-manager, openssh-client, systemd
+Recommends: iw
+Installed-Size: @INSTALLED_SIZE@
+Description: ZSpace T2 board support files
+ The board userspace for the ZSpace T2 (Rockchip RK3568) image: the systemd
+ units and their enablement, the /etc drop-ins (NetworkManager, dnsmasq,
+ sshd, logind, systemd, power-button policy) and the /usr/local/sbin helper
+ scripts.
+ .
+ The files under /etc are conffiles, so local edits survive an upgrade.  The
+ same .deb ships in a local apt repository inside the image (/opt/t2/repo),
+ so a board can reinstall or upgrade the package offline, without reflashing.

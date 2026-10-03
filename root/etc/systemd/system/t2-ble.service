@@ -1,0 +1,22 @@
+[Unit]
+# The BLE management channel (BlueZ GATT server, D-Bus).  It is the one way
+# into a freshly flashed board that needs no cable, no card reader and no
+# network: a page on any laptop with Web Bluetooth can reach it.
+Description=T2 BLE management service (BlueZ GATT)
+# bluetooth.service must exist first, but a missing controller is not an
+# error: the app exits and Restart retries, so a late-probing module still
+# gets a service.
+After=bluetooth.service t2-provision.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/t2-ble.py
+Restart=on-failure
+RestartSec=10
+# /var/log/t2-ble.log is written by the app itself; the journal gets it too.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

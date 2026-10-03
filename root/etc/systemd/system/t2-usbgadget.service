@@ -1,0 +1,30 @@
+[Unit]
+Description=ZSpace T2: USB device-mode gadget (provisioning link + config drive)
+Documentation=file:/usr/share/doc/t2-provision/README
+# Provisioning reads the config partition and unmounts it again; the gadget
+# may export that same partition as a USB drive, so it must come after.
+After=t2-provision.service local-fs.target
+ConditionPathExists=/usr/local/sbin/t2-usbgadget.sh
+
+[Service]
+# The script is long-lived on purpose: it supervises the gadget - re-binding it
+# when the UDC goes away, and adding/removing the config-drive LUN as the card
+# comes and goes.  Measured 2026-10-03: pulling the SD card out from under the
+# exported LUN cost the host the *whole* gadget, and the old one-shot unit had
+# already exited, so nothing rebuilt it - the host was left with no gadget at
+# all until the service was restarted by hand.
+Type=simple
+ExecStart=/usr/local/sbin/t2-usbgadget.sh
+# Outer layer: the script itself dying (a bug, the OOM killer) is restarted with
+# an exponential backoff from 1 s up to 60 s, so a hard failure cannot spin.
+# The inner layer is the script's own supervision loop, which never exits for a
+# gadget problem - only for a script problem.
+Restart=always
+RestartSec=1
+RestartSteps=5
+RestartMaxDelaySec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

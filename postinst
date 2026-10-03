@@ -1,0 +1,32 @@
+#!/bin/sh
+# t2-utils postinst - keep the shipped units enabled, best effort.
+#
+# The profile's build hooks enable these in the image; a board that installs
+# or upgrades the .deb later has to end up in the same state, and a unit added
+# by a future version must be enabled too.  Nothing here may fail the dpkg
+# run: the build chroot has no running systemd, and a *started* service at
+# package-install time is never what we want for an appliance.  Every action
+# is idempotent and swallowed.
+set -e
+
+for unit in /etc/systemd/system/t2-*.service; do
+    [ -e "$unit" ] || continue
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable "$(basename "$unit")" >/dev/null 2>&1 || true
+    fi
+done
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+# The helpers must stay executable even if a copy lost its mode.
+chmod 755 \
+    /usr/local/sbin/t2-ble-password /usr/local/sbin/t2-sethostname \
+    /usr/local/sbin/t2-ble.py /usr/local/sbin/t2-powerkey.py \
+    /usr/local/sbin/t2-boot-commit.sh /usr/local/sbin/t2-firstboot-identity.sh \
+    /usr/local/sbin/t2-growroot.sh /usr/local/sbin/t2-hddled.sh \
+    /usr/local/sbin/t2-leds.sh /usr/local/sbin/t2-provision.sh \
+    /usr/local/sbin/t2-usbgadget.sh 2>/dev/null || true
+
+exit 0

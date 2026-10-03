@@ -1,0 +1,35 @@
+[Unit]
+# ZSpace T2: per-board identity on the first boot.
+#
+# The shipped image is deliberately identical on every board: the build leaves
+# /etc/machine-id empty and the root fs keeps `mke2fs`'s UUID.  This unit turns
+# those into per-board values on the first boot (see the script for what it
+# does and why tune2fs is safe), then never runs again.
+#
+# Ordering: this unit runs BEFORE t2-provision.service, so a `hostname=` key on
+# the card's T2-CONFIG partition is applied *after* the derived default and
+# therefore wins.  Like t2-provision.service it sits ahead of the network
+# managers, and DefaultDependencies=no keeps the explicit ordering exact.
+#
+# The script guards itself on a persistent stamp and on the hostname still
+# being the baked default, so a provisioned hostname is never overwritten.
+Description=ZSpace T2: establish per-board identity on first boot
+Documentation=file:///usr/local/sbin/t2-firstboot-identity.sh
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target t2-provision.service
+Wants=network-pre.target
+ConditionPathExists=/usr/local/sbin/t2-firstboot-identity.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The script is best-effort and exits 0 on every path; the `-` prefix is a
+# belt-and-braces guard so even an unexpected signal in the script cannot mark
+# the boot degraded.
+ExecStart=-/usr/local/sbin/t2-firstboot-identity.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

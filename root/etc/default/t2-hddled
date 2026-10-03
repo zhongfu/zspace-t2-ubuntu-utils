@@ -1,0 +1,9 @@
+# t2-hddled configuration - see /usr/local/sbin/t2-hddled.sh
+#
+# bay -> /sys/block device.  On the T2 the two bays are M.2 NVMe; check with
+# `lsblk -o NAME,MODEL` and adjust if the slots are populated differently
+# (nvme0n1 = PCIe3x2 slot, nvme1n1 = PCIe2x1 slot).
+MAP="hdd1=nvme0n1 hdd2=nvme1n1"
+
+# Poll interval in seconds.
+POLL=1

@@ -1,0 +1,37 @@
+[Unit]
+# ZSpace T2: the userspace half of the kernel A/B fallback.
+#
+# U-Boot counts boots in its persistent environment (`CONFIG_BOOTCOUNT_LIMIT` +
+# `CONFIG_BOOTCOUNT_ENV`, board defconfig
+# u-boot/configs/t2-rk3568_defconfig): a freshly written kernel is armed with
+# `upgrade_available=1` and `bootcount=0`, every boot then increments
+# `bootcount`, and once `bootcount > bootlimit` (3) U-Boot runs
+# `altbootcmd` and boots the previous kernel `/Image.old` instead of `/Image`.
+# Nothing in the kernel ever clears that counter, so this unit closes the loop:
+# once the boot has clearly *worked* (it runs after multi-user.target), it
+# clears `bootcount` and `upgrade_available`, and if the boot was the fallback
+# one (`t2_fallback=1`, set by `altbootcmd`) it promotes `/Image.old` to
+# `/Image`.  Rollback stays below Linux - one kernel file and a short-lived
+# env, with no firmware or bootloader segment ever rewritten.
+#
+# Ordering: the root filesystem and the per-board identity work
+# (t2-firstboot-identity.service) are done by multi-user.target, so this unit
+# only reports a kernel as good when the system really came up.  It is
+# best-effort by construction - a card boot, a missing FAT `boot` partition or
+# a rootfs without libubootenv must still boot - so the script exits 0 on
+# every path and the `-` prefix keeps even an unexpected signal from marking
+# the boot degraded.
+Description=ZSpace T2: commit a healthy boot (clear the U-Boot boot counter / promote the fallback kernel)
+Documentation=file:///usr/local/sbin/t2-boot-commit.sh
+After=local-fs.target multi-user.target
+ConditionPathExists=/usr/local/sbin/t2-boot-commit.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/local/sbin/t2-boot-commit.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

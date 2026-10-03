@@ -1,0 +1,18 @@
+[Unit]
+Description=ZSpace T2 LED policy (green = activity, red = fault)
+Documentation=man:leds(1)
+# No After=multi-user.target here: this unit is itself WantedBy=multi-user.target,
+# and ordering it after that target closes an ordering cycle.  systemd measured
+# it 2026-10-01 ("multi-user.target: Found ordering cycle: <unit>/start after
+# t2-leds.service/start after multi-user.target/start") and resolved it by
+# deleting the other unit's start job, so that unit never ran at boot.  The LEDs
+# are set as part of bringing multi-user up.
+ConditionPathExists=/sys/class/leds
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/t2-leds.sh
+
+[Install]
+WantedBy=multi-user.target

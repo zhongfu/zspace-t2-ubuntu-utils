@@ -1,0 +1,26 @@
+[Unit]
+# Generate the SSH host keys on first boot.
+#
+# The build deletes /etc/ssh/ssh_host_* on purpose (hooks/60-ssh.sh): baked keys
+# would be identical on every flashed board, which is a fleet-wide secret.
+# Ubuntu's own sshd-keygen.service cannot replace them here - it carries
+# ConditionFirstBoot=yes, which is false as soon as the image has a machine-id,
+# so sshd failed at first boot with "no hostkeys available" and ssh.service
+# restarted five times into failure (measured 2026-09-30).
+#
+# `ssh-keygen -A` is idempotent: it only creates the key types that are
+# missing, so this is a no-op from the second boot on.
+Description=Generate missing SSH host keys
+Documentation=man:ssh-keygen(1)
+DefaultDependencies=no
+After=local-fs.target
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service ssh.socket sshd.service sshd@.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target

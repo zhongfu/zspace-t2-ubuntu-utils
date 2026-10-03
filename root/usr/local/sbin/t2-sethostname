@@ -1,0 +1,33 @@
+#!/bin/sh
+# t2-sethostname [--root DIR] <name> - set the hostname, keep /etc/hosts in step.
+#
+# `hostnamectl`/`hostname` write /etc/hostname but nothing rewrites the
+# 127.0.1.1 line in /etc/hosts, so a derived (t2-<machine-id>) or provisioned
+# name would leave /etc/hosts still mapping the baked default `t2`.  That is
+# cloud-init's update_etc_hosts behaviour, and it was the one real gap its
+# identity modules had over ours (2026-10-02, noticed because `hostname` said
+# t2-2cdd55 while /etc/hosts said t2).
+set -u
+
+root=
+if [ "${1:-}" = "--root" ]; then
+	root=$2
+	shift 2
+fi
+name=${1:-}
+[ -n "$name" ] || { echo "usage: t2-sethostname [--root DIR] <name>" >&2; exit 2; }
+
+hosts="$root/etc/hosts"
+if [ -f "$hosts" ]; then
+	if grep -qE '^127\.0\.1\.1[[:space:]]' "$hosts"; then
+		# keep it in place so a hand-edited file keeps its ordering
+		sed -i -E "s|^127\.0\.1\.1[[:space:]].*|127.0.1.1\t$name|" "$hosts"
+	else
+		printf '127.0.1.1\t%s\n' "$name" >>"$hosts"
+	fi
+fi
+printf '%s\n' "$name" >"$root/etc/hostname" || exit 1
+# Deliberately no live name change here: t2-firstboot-identity.sh runs before
+# hostnamed exists and uses hostname(1), t2-provision.sh runs later and uses
+# hostnamectl(1).  Both call their own tool after this helper returns.
+exit 0

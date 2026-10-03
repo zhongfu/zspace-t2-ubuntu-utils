@@ -1,0 +1,15 @@
+[Unit]
+Description=ZSpace T2 per-bay drive LEDs (present / activity / fault)
+Documentation=file:/etc/default/t2-hddled
+DefaultDependencies=no
+After=local-fs.target
+ConditionPathExists=/sys/class/leds
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/t2-hddled.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=sysinit.target
