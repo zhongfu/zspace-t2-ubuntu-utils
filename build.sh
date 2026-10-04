@@ -28,6 +28,13 @@ if [ -z "$version" ]; then
     desc=$(git -C "$repo" describe --tags --always --dirty 2>/dev/null || echo unknown)
     version=${desc#v}
     version=$(printf '%s' "$version" | sed 's/[^0-9A-Za-z.+~-]//g')
+    # a bare commit id is a valid describe result but not a valid Debian
+    # version, which must start with a digit; a tagged build is already
+    # v<semver> and unaffected
+    case "$version" in
+        [0-9]*) ;;
+        *) version="0.0.0~$version" ;;
+    esac
 fi
 out=${2:-$repo/build/t2-utils_${version}_all.deb}
 
