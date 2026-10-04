@@ -132,9 +132,6 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Download the assets
         uses: actions/download-artifact@v4
@@ -157,6 +154,27 @@ jobs:
             gh release create "$TAG" "${files[@]}" --title "$TAG" --verify-tag
           fi
           gh release view "$TAG" --json url,assets --jq '.url, (.assets[].name)'
+
+  # Publishing the release and deploying Pages are separate jobs on purpose.  The
+  # github-pages environment only accepts deployments from the refs its protection
+  # rules list, and by default a tag is not among them, so this job can be
+  # rejected before it starts.  The release above has already been published by
+  # then, and a rejected deployment must not take it down with it: allow the tag
+  # (or all refs) under Settings -> Environments -> github-pages -> Deployment
+  # branches and tags to make the deploy happen for real.
+  pages:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Download the assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
