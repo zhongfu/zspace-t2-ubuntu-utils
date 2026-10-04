@@ -142,11 +142,20 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job checks nothing out - the assets come from the artefact - so
+          # gh has no remote to work out which repository it is in.
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
           TAG: v${{ needs.build.outputs.version }}
         run: |
           set -eu
           files=(dist/t2-utils_${VERSION}_all.deb dist/apt-repo.tar.gz)
+          for f in "${files[@]}"; do
+            [ -f "$f" ] || {
+              echo "::error title=missing release asset::$f is not in the downloaded artefact"
+              exit 1
+            }
+          done
           if gh release view "$TAG" >/dev/null 2>&1; then
             # a re-run of a failed job: refresh the files
             gh release upload "$TAG" "${files[@]}" --clobber
