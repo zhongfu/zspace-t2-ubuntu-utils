@@ -7,8 +7,10 @@ name: Release
 # tarball; Pages carries the repository contents.
 #
 # Signing needs the repository secrets APT_SIGNING_KEY (ASCII-armoured private
-# key) and APT_SIGNING_KEY_ID (its key id).  Without them the job fails before
-# publishing anything.
+# key) and APT_SIGNING_KEY_ID (its key id).  Without them the job still
+# publishes, but the repository is unsigned, and apt then needs [trusted=yes] for
+# it - which is what the image already uses for its own on-board copy.  Set the
+# secrets and re-run the workflow to publish a signed repository instead.
 on:
   push:
     tags: ['v*']
@@ -95,13 +97,26 @@ jobs:
           mv "$tmprel" "$repo/Release"
 
           # A clearsigned InRelease is what apt reads; the detached Release.gpg
-          # covers clients old enough not to look at InRelease.
-          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
-          gpg --batch --yes --local-user "$APT_SIGNING_KEY_ID" \
-            --clearsign -o "$repo/InRelease" "$repo/Release"
-          gpg --batch --yes --local-user "$APT_SIGNING_KEY_ID" \
-            --detach-sign --armor -o "$repo/Release.gpg" "$repo/Release"
-          gpg --verify "$repo/InRelease"
+          # covers clients old enough not to look at InRelease.  Without the
+          # signing secrets the repository is published unsigned instead: apt
+          # then needs [trusted=yes] for it, exactly as the image treats its own
+          # on-board copy.
+          if [ -n "$APT_SIGNING_KEY" ] && [ -n "$APT_SIGNING_KEY_ID" ]; then
+            printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
+            gpg --batch --yes --local-user "$APT_SIGNING_KEY_ID" \
+              --clearsign -o "$repo/InRelease" "$repo/Release"
+            gpg --batch --yes --local-user "$APT_SIGNING_KEY_ID" \
+              --detach-sign --armor -o "$repo/Release.gpg" "$repo/Release"
+            gpg --verify "$repo/InRelease"
+            # Ship the public half as well, so a board pointed at the published
+            # repository has a key to trust (deb [signed-by=...]).
+            gpg --batch --armor --export "$APT_SIGNING_KEY_ID" \
+              > "$repo/zspace-t2-archive-keyring.asc"
+            echo "signed the repository with $APT_SIGNING_KEY_ID"
+          else
+            rm -f "$repo/InRelease" "$repo/Release.gpg"
+            echo "::warning title=Unsigned apt repository::APT_SIGNING_KEY and APT_SIGNING_KEY_ID are not set, so this release publishes an unsigned repository, which apt accepts only with [trusted=yes]. Set both secrets and re-run this workflow to publish a signed one."
+          fi
 
           tar czf dist/apt-repo.tar.gz -C "$repo" .
           ls -l dist dist/repo
