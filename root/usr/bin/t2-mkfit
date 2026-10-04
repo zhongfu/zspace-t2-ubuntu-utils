@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Assemble the ZSpace T2 boot FIT for the board's U-Boot.
+
+The FIT is the Rockchip "external FIT" the board's bootloader reads: a flattened
+device tree whose /images sub-images are addressed with the pre-`data-offset`
+spelling `data-position`/`data-size` (U-Boot 2017.09-based Rockchip builds look
+the payloads up that way), each with a sha256 `hash` node, and one default
+/configuration naming the sub-images to boot.  Both the image build and a board
+that upgrades its kernel use this file, so the layout is defined once, here.
+
+Layout produced (the vendor's boot.img convention):
+
+    [FIT structure, padded to 0x800][fdt][kernel][ramdisk][resource]
+
+with per-image data-position/data-size, sha256 hash nodes, the Rockchip `multi`
+configuration hook, rollback-index = 0 and no signature node - the vendor's own
+FIT is unsigned, so an unsigned FIT is what the bootloader already accepts.
+
+Why not `mkimage -f x.its -E`: modern mkimage emits `data-offset` + `hash-1`,
+which this U-Boot does not read, and it cannot express the Rockchip `multi`
+hook.  Why not dtc: the board image ships no device-tree-compiler (it is not in
+the base profile, and the image installs this package from a file: apt repo, so
+a new runtime dependency could not be satisfied offline).  The tree is small and
+fixed, so it is serialised directly and then parsed back for verification.
+
+The ramdisk is stored uncompressed: this U-Boot skips decompression for FIT
+ramdisks (the `compression` property there is deprecated), so a gzip'd cpio
+input is expanded here and the initrd reaches the kernel as a plain cpio.
+
+    t2-mkfit --kernel Image --dtb board.dtb [--ramdisk initramfs.cpio.gz] \
+             [--resource resource.img] --out boot.img
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import hashlib
+import struct
+import sys
+from pathlib import Path
+
+# The vendor structure occupies 0x800 bytes; payloads start on the same
+# boundary, except the last, which packs directly after its predecessor.
+ALIGN = 0x800
+DESCRIPTION = "U-Boot FIT source file for arm"
+
+# Rockchip's board address map, the same one the vendor FIT uses: the kernel and
+# fdt match rk-fit.py's load addresses, and the ramdisk gets the standard slot
+# between them (fdt 0x08300000 .. kernel_comp 0x0a000000 region).
+LOAD = {"fdt": 0x08300000, "kernel": 0x00280000, "ramdisk": 0x0a200000}
+
+# ---------------------------------------------------------------- FDT writer
+FDT_BEGIN_NODE, FDT_END_NODE, FDT_PROP, FDT_NOP, FDT_END = 1, 2, 3, 4, 9
+
+
+def _pad4(n: int) -> int:
+    return (n + 3) & ~3
+
+
+class Fdt:
+    """Serialise one FDT: a struct block and the property-name string block."""
+
+    def __init__(self) -> None:
+        self.struct = bytearray()
+        self.strings = bytearray()
+        self._nameoff: dict[str, int] = {}
+
+    def _name(self, name: str) -> int:
+        off = self._nameoff.get(name)
+        if off is None:
+            off = len(self.strings)
+            self._nameoff[name] = off
+            self.strings += name.encode() + b"\0"
+        return off
+
+    # value encoders
+    @staticmethod
+    def word(*values: int) -> bytes:
+        return struct.pack(f">{len(values)}I", *values)
+
+    @staticmethod
+    def text(value: str) -> bytes:
+        return value.encode() + b"\0"
+
+    def begin(self, name: str) -> None:
+        self.struct += struct.pack(">I", FDT_BEGIN_NODE)
+        self.struct += name.encode() + b"\0"
+        self.struct += b"\0" * (-len(self.struct) % 4)
+
+    def prop(self, name: str, value: bytes) -> None:
+        self.struct += struct.pack(">III", FDT_PROP, len(value), self._name(name))
+        self.struct += value
+        self.struct += b"\0" * (-len(self.struct) % 4)
+
+    def end(self) -> None:
+        self.struct += struct.pack(">I", FDT_END_NODE)
+
+    def node(self, name: str, props: list[tuple[str, bytes]],
+             children: list = ()) -> None:
+        self.begin(name)
+        for prop_name, value in props:
+            self.prop(prop_name, value)
+        for child in children:
+            child()
+        self.end()
+
+    def finish(self) -> bytes:
+        self.struct += struct.pack(">I", FDT_END)
+        reserve = b"\0" * 16                       # empty mem-reservation block
+        off_struct = 40 + len(reserve)
+        off_strings = off_struct + len(self.struct)
+        total = off_strings + len(self.strings)
+        header = struct.pack(">10I", 0xD00DFEED, total, off_struct, off_strings,
+                             40, 17, 16, 0, len(self.strings), len(self.struct))
+        return header + reserve + bytes(self.struct) + bytes(self.strings)
+
+
+# ---------------------------------------------------------------- FIT builder
+def build_dtb(payloads: list[tuple[str, int, int]], hashes: dict[str, bytes],
+              multi: bool) -> bytes:
+    """payloads: (name, data_position, data_size) in output order."""
+    fdt = Fdt()
+    images = []
+
+    def image_node(name: str, pos: int, size: int) -> None:
+        props: list[tuple[str, bytes]] = [
+            ("description", Fdt.text(name)),
+            ("data-position", Fdt.word(pos)),
+            ("data-size", Fdt.word(size)),
+            ("type", Fdt.text({"fdt": "flat_dt", "kernel": "kernel",
+                               "ramdisk": "ramdisk"}.get(name, "multi"))),
+            ("arch", Fdt.text("arm64")),
+            ("compression", Fdt.text("none")),
+        ]
+        if name == "kernel":
+            props += [("os", Fdt.text("linux")),
+                      ("load", Fdt.word(LOAD["kernel"])),
+                      ("entry", Fdt.word(LOAD["kernel"]))]
+        elif name in LOAD:
+            props.append(("load", Fdt.word(LOAD[name])))
+
+        def child() -> None:
+            fdt.node("hash", [("algo", Fdt.text("sha256")),
+                              ("value", hashes[name])])
+
+        fdt.node(name, props, [child])
+
+    for name, pos, size in payloads:
+        images.append(lambda n=name, p=pos, s=size: image_node(n, p, s))
+
+    def conf() -> None:
+        props = [("description", Fdt.text("ZSpace T2")),
+                 ("kernel", Fdt.text("kernel")),
+                 ("fdt", Fdt.text("fdt"))]
+        if any(n == "ramdisk" for n, _, _ in payloads):
+            props.append(("ramdisk", Fdt.text("ramdisk")))
+        if multi:
+            props.append(("multi", Fdt.text("resource")))
+        props.append(("rollback-index", Fdt.word(0)))
+        fdt.node("conf", props)
+
+    fdt.node("", [("description", Fdt.text(DESCRIPTION)),
+                  ("#address-cells", Fdt.word(1))],
+             [lambda: fdt.node("images", [], images),
+              lambda: fdt.node("configurations",
+                               [("default", Fdt.text("conf"))], [conf])])
+    return fdt.finish()
+
+
+# ------------------------------------------------- FDT reader (verification)
+def fdt_parse(data: bytes) -> dict[str, dict[str, bytes]] | None:
+    if data[:4] != struct.pack(">I", 0xD00DFEED):
+        return None
+    totalsize, off_struct, off_strings = struct.unpack_from(">3I", data, 4)
+    strings = data[off_strings:totalsize]
+    nodes: dict[str, dict[str, bytes]] = {"/": {}}
+    stack = ["/"]
+    p = off_struct
+    while p + 4 <= totalsize:
+        token, = struct.unpack_from(">I", data, p)
+        p += 4
+        if token == FDT_BEGIN_NODE:
+            stop = data.find(b"\0", p, totalsize)
+            if stop < 0:
+                return None
+            name = data[p:stop].decode("utf-8", "replace")
+            p = _pad4(stop + 1)
+            path = "/" + name if stack[-1] == "/" else stack[-1] + "/" + name
+            stack.append(path)
+            nodes.setdefault(path, {})
+        elif token == FDT_END_NODE:
+            if len(stack) == 1:
+                return None
+            stack.pop()
+        elif token == FDT_PROP:
+            length, nameoff = struct.unpack_from(">II", data, p)
+            p += 8
+            value = data[p:p + length]
+            p = _pad4(p + length)
+            stop = strings.find(b"\0", nameoff)
+            name = strings[nameoff:stop if stop >= 0 else len(strings)]
+            nodes[stack[-1]][name.decode("utf-8", "replace")] = value
+        elif token == FDT_NOP:
+            continue
+        elif token == FDT_END:
+            break
+        else:
+            return None
+    return nodes
+
+
+def prop_int(props: dict[str, bytes], name: str) -> int | None:
+    raw = props.get(name)
+    if not raw:
+        return None
+    return struct.unpack(f">{len(raw)//4}I", raw)[0]
+
+
+# ---------------------------------------------------------------- main
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--kernel", type=Path, required=True)
+    ap.add_argument("--dtb", type=Path, required=True)
+    ap.add_argument("--ramdisk", type=Path)
+    ap.add_argument("--resource", type=Path)
+    ap.add_argument("--out", type=Path, required=True)
+    args = ap.parse_args()
+
+    blobs: dict[str, bytes] = {"fdt": args.dtb.read_bytes(),
+                               "kernel": args.kernel.read_bytes()}
+    if args.ramdisk:
+        raw = args.ramdisk.read_bytes()
+        # the FIT ramdisk is stored uncompressed; expand a gzip'd cpio initramfs
+        # (an already-raw or empty file is taken as-is)
+        blobs["ramdisk"] = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
+    if args.resource:
+        blobs["resource"] = args.resource.read_bytes()
+
+    payloads = [(name, 0, len(blobs[name]))
+                for name in ("fdt", "kernel", "ramdisk", "resource")
+                if name in blobs]
+    hashes = {name: hashlib.sha256(blob).digest() for name, blob in blobs.items()}
+
+    # pass 1: the structure size fixes the payload offsets; hashes are 32 bytes
+    # in either pass, so the final structure is the same length
+    probe = build_dtb(payloads, {n: b"\0" * 32 for n in blobs},
+                      multi="resource" in blobs)
+    struct_size = max(ALIGN, len(probe))
+    offset = struct_size
+    positioned = []
+    for i, (name, _pos, size) in enumerate(payloads):
+        # every payload but the last starts on the 0x800 boundary, mirroring
+        # the vendor layout
+        if i < len(payloads) - 1:
+            offset = (offset + ALIGN - 1) // ALIGN * ALIGN
+        positioned.append((name, offset, size))
+        offset += size
+
+    structure = build_dtb(positioned, hashes, multi="resource" in blobs)
+    if len(structure) > struct_size:
+        sys.exit(f"t2-mkfit: structure grew to {len(structure)} > "
+                 f"{struct_size}; this is a bug")
+
+    out = bytearray(structure.ljust(struct_size, b"\0"))
+    for name, pos, _size in positioned:
+        out += b"\0" * (pos - len(out))
+        out += blobs[name]
+    args.out.write_bytes(bytes(out))
+
+    # read it back the way the bootloader would
+    data = args.out.read_bytes()
+    nodes = fdt_parse(data)
+    if nodes is None:
+        sys.exit("t2-mkfit: verification failed: FIT structure does not parse")
+    ok = True
+    for name, _pos, _size in positioned:
+        props = nodes.get(f"/images/{name}", {})
+        pos = prop_int(props, "data-position")
+        size = prop_int(props, "data-size")
+        blob = data[pos:pos + size]
+        recorded = nodes.get(f"/images/{name}/hash", {}).get("value")
+        good = recorded == hashlib.sha256(blob).digest() and len(blob) == size
+        ok = ok and good
+        print(f"  {name:9s} position=0x{pos:x} size={size:,} sha256_ok={good}")
+    conf = nodes.get("/configurations/conf", {})
+    print(f"  config: {sorted(conf)}  "
+          f"default={nodes.get('/configurations', {}).get('default', b'').rstrip(bytes([0])).decode()}")
+    print(f"  signature node: {'/configurations/conf/signature' in nodes}")
+    print(f"wrote {args.out} ({len(data):,} bytes) - verification "
+          f"{'ok' if ok else 'FAILED'}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

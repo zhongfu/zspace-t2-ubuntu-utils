@@ -10,29 +10,36 @@
 # pins every ar/tar member mtime, so the same tree builds the same .deb bytes.
 #
 # Usage: build.sh [VERSION] [OUT.deb]
-#   VERSION  defaults to the profile-release-independent fallback
-#            0.1.0~<git describe --tags --always --dirty>
-#   OUT      defaults to <repo>/build/rootfs/t2-utils_<VERSION>_all.deb
+#   VERSION  defaults to this repo's `git describe --tags --always --dirty`,
+#            with a leading `v` stripped (the release tags are v<semver>)
+#   OUT      defaults to <repo>/build/t2-utils_<VERSION>_all.deb
 #
-# rootfs/t2-distro.py calls this with the version it derives from the profile
-# (base.json `release`), so the driver and a hand run agree on one builder.
+# The image build passes the profile release and a path under its own output
+# tree, so it and a hand run use one builder and agree on the .deb.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo=$(CDPATH= cd -- "$here/../../.." && pwd)
+repo=$here
 
 version=${1:-}
 if [ -z "$version" ]; then
+    # `--always` still yields a version with no tags (a bare commit id), so a
+    # development build and a release build both produce an installable .deb.
     desc=$(git -C "$repo" describe --tags --always --dirty 2>/dev/null || echo unknown)
-    version="0.1.0~$(printf '%s' "$desc" | sed 's/[^0-9A-Za-z.+~]//g')"
+    version=${desc#v}
+    version=$(printf '%s' "$version" | sed 's/[^0-9A-Za-z.+~-]//g')
 fi
-out=${2:-$repo/build/rootfs/t2-utils_${version}_all.deb}
+out=${2:-$repo/build/t2-utils_${version}_all.deb}
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 mkdir -p "$work/DEBIAN"
-installed_size=$(du -sk "$here/root" | cut -f1)
+# du -sb counts apparent bytes, not allocated blocks: du -sk varies with the
+# filesystem's block size and directory slack, so two builds of the same tree
+# could put a different Installed-Size in the control member and hash
+# differently.  Kilo is 1024 here, matching dpkg.
+installed_size=$(( ($(du -sb "$here/root" | cut -f1) + 1023) / 1024 ))
 sed -e "s/@VERSION@/$version/g" \
     -e "s/@INSTALLED_SIZE@/$installed_size/g" \
     "$here/control.in" > "$work/DEBIAN/control"

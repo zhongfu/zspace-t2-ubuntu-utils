@@ -1,0 +1,156 @@
+name: Release
+
+# On a v<semver> tag: build the .deb, assemble a signed flat apt repository, and
+# publish both.  The repository is the layout the image ships in /opt/t2/repo
+# (a flat `deb <url> ./` source), so a board can point apt at the published
+# GitHub Pages URL and upgrade.  The release carries the .deb and the repository
+# tarball; Pages carries the repository contents.
+#
+# Signing needs the repository secrets APT_SIGNING_KEY (ASCII-armoured private
+# key) and APT_SIGNING_KEY_ID (its key id).  Without them the job fails before
+# publishing anything.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v<semver> tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # The release job honours the same repository variable as the other T2
+    # repositories: set T2_RELEASE_RUNNER to build somewhere else.
+    runs-on: ${{ vars.T2_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve the version
+        id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          tag=${INPUT_TAG:-${GITHUB_REF_NAME}}
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "error: '$tag' is not a v<semver> tag" >&2; exit 1 ;;
+          esac
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "building $tag at $(git rev-parse --short HEAD)"
+
+      - name: Install the repo tooling
+        # apt-ftparchive lives in apt-utils and is not on the runner by default.
+        run: sudo apt-get update && sudo apt-get install -y apt-utils gnupg
+
+      - name: Build the package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./build.sh "$VERSION" "dist/t2-utils_${VERSION}_all.deb"
+
+      - name: Assemble and sign the apt repository
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          APT_SIGNING_KEY_ID: ${{ secrets.APT_SIGNING_KEY_ID }}
+        run: |
+          set -eu
+          # Run apt-ftparchive from inside the repository: it stores the
+          # Filename as given, and a flat repo needs `./name.deb`, not a path
+          # with the build directory in it.  Release is generated outside the
+          # directory: apt-ftparchive hashes every file it finds, and
+          # `> repo/Release` would leave the truncated Release in place for it
+          # to hash.
+          repo=dist/repo
+          mkdir -p "$repo"
+          cp "dist/t2-utils_${VERSION}_all.deb" "$repo/"
+          ( cd "$repo" && apt-ftparchive packages . > Packages )
+          tmprel=$(mktemp)
+          ( cd "$repo" && apt-ftparchive \
+              -o APT::FTPArchive::Release::Origin=zspace \
+              -o APT::FTPArchive::Release::Label="ZSpace T2" \
+              -o APT::FTPArchive::Release::Suite=stable \
+              -o APT::FTPArchive::Release::Codename=t2 \
+              -o APT::FTPArchive::Release::Architectures=all \
+              -o APT::FTPArchive::Release::Components=main \
+              release . > "$tmprel" )
+          mv "$tmprel" "$repo/Release"
+
+          # A clearsigned InRelease is what apt reads; the detached Release.gpg
+          # covers clients old enough not to look at InRelease.
+          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
+          gpg --batch --yes --local-user "$APT_SIGNING_KEY_ID" \
+            --clearsign -o "$repo/InRelease" "$repo/Release"
+          gpg --batch --yes --local-user "$APT_SIGNING_KEY_ID" \
+            --detach-sign --armor -o "$repo/Release.gpg" "$repo/Release"
+          gpg --verify "$repo/InRelease"
+
+          tar czf dist/apt-repo.tar.gz -C "$repo" .
+          ls -l dist dist/repo
+
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Download the assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: v${{ needs.build.outputs.version }}
+        run: |
+          set -eu
+          files=(dist/t2-utils_${VERSION}_all.deb dist/apt-repo.tar.gz)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # a re-run of a failed job: refresh the files
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --title "$TAG" --verify-tag
+          fi
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[].name)'
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the repository to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/repo
+
+      - name: Deploy to Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

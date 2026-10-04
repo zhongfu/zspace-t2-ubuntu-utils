@@ -22,6 +22,7 @@ fi
 
 # The helpers must stay executable even if a copy lost its mode.
 chmod 755 \
+    /usr/bin/t2-mkfit \
     /usr/local/sbin/t2-ble-password /usr/local/sbin/t2-sethostname \
     /usr/local/sbin/t2-ble.py /usr/local/sbin/t2-powerkey.py \
     /usr/local/sbin/t2-boot-commit.sh /usr/local/sbin/t2-firstboot-identity.sh \

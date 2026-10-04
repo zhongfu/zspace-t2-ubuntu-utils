@@ -1,0 +1,53 @@
+name: Build
+
+# Build the t2-utils package on pull requests and branch pushes, so breakage
+# shows up before a release.  The package is architecture-independent, but it
+# runs on the board, so it is built on the board's architecture like the other
+# T2 repositories.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Build the package
+        run: ./build.sh
+
+      - name: Show the package
+        run: |
+          deb=$(ls build/t2-utils_*_all.deb)
+          echo "sha256: $(sha256sum "$deb")"
+          dpkg-deb -I "$deb"
+          dpkg-deb -c "$deb"
+
+      - name: Smoke-test t2-mkfit
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          dpkg-deb -x build/t2-utils_*_all.deb "$work"
+          test -x "$work/usr/bin/t2-mkfit"
+          python3 -m py_compile "$work/usr/bin/t2-mkfit"
+          "$work/usr/bin/t2-mkfit" --help >/dev/null
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: t2-utils-deb
+          path: build/t2-utils_*_all.deb
+          if-no-files-found: error
+          retention-days: 14

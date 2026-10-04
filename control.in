@@ -10,8 +10,9 @@ Installed-Size: @INSTALLED_SIZE@
 Description: ZSpace T2 board support files
  The board userspace for the ZSpace T2 (Rockchip RK3568) image: the systemd
  units and their enablement, the /etc drop-ins (NetworkManager, dnsmasq,
- sshd, logind, systemd, power-button policy) and the /usr/local/sbin helper
- scripts.
+ sshd, logind, systemd, power-button policy), the /usr/local/sbin helper
+ scripts, and t2-mkfit, which assembles the boot FIT (kernel + device tree +
+ initramfs) the board's U-Boot reads.
  .
  The files under /etc are conffiles, so local edits survive an upgrade.  The
  same .deb ships in a local apt repository inside the image (/opt/t2/repo),
